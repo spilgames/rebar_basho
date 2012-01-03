@@ -67,8 +67,11 @@ is_arch(ArchRegex) ->
 
 get_arch() ->
     Words = wordsize(),
+    {O, T} = os:type(),
+    OS = string:join([atom_to_list(O), atom_to_list(T)], "_"),
     erlang:system_info(otp_release) ++ "-"
-        ++ erlang:system_info(system_architecture) ++ "-" ++ Words.
+        ++ erlang:system_info(system_architecture) ++ "-" ++ Words
+        ++ "-" ++ OS.
 
 wordsize() ->
     try erlang:system_info({wordsize, external}) of
