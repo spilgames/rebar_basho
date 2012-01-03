@@ -38,13 +38,18 @@
 
 %% Supported configuration variables:
 %%
-%% * port_sources - Erlang list of filenames or wildcards to be compiled. May
-%%                  also contain a tuple consisting of a regular expression to
-%%                  be applied against the system architecture and a list of
-%%                  filenames or wildcards to include should the expression
-%%                  pass.
+%% * port_specs - Erlang list of tuples of the forms
+%%                {arch_regex(), "priv/foo.so", ["c_src/foo.c"]}
+%%                {"priv/foo", ["c_src/foo.c"]}
 %%
-%% * so_specs  - Erlang list of tuples of the form
+%% * port_sources (DEPRECATED) - Erlang list of filenames or wildcards
+%%                  to be compiled. May also contain a tuple
+%%                  consisting of a regular expression to be applied
+%%                  against the system architecture and a list of
+%%                  filenames or wildcards to include should the
+%%                  expression pass.
+%%
+%% * so_specs (DEPRECATED)  - Erlang list of tuples of the form
 %%               {"priv/so_name.so", ["c_src/object_file_name.o"]}
 %%               useful for building multiple *.so files.
 %%
@@ -88,76 +93,84 @@
 %%
 
 compile(Config, AppFile) ->
+    rebar_utils:deprecated(port_sources, port_specs, Config, "soon"),
+    rebar_utils:deprecated(so_name, port_specs, Config, "soon"),
+    rebar_utils:deprecated(so_specs, port_specs, Config, "soon"),
+
+    SourceFiles = get_sources(Config),
+    Env = setup_env(Config),
+
     %% Allow the user to specify that dependent files get built first
     FirstFiles = expand_sources(rebar_config:get(Config,
                                                  port_first_files, []), []),
-
-    %% Compose list of sources from config file -- defaults to c_src/*.c
-    Sources = expand_sources(rebar_config:get_list(Config, port_sources,
-                                                   ["c_src/*.c"]), []),
-    Env = setup_env(Config),
-
     {FirstNewBins, FirstExistingBins} = case FirstFiles of
                                             [] ->
                                                 {[], []};
                                             _ ->
-                                            compile_each(FirstFiles, Config,
-                                                         Env, [], [])
+                                                compile_each(FirstFiles, Config,
+                                                             Env, [], [])
                                         end,
-    case Sources of
+    case SourceFiles of
         [] ->
             ok;
         _ ->
 
             %% Remove first files from found files
-            RestFiles = [Source || Source <- Sources,
+            RestFiles = [Source || Source <- SourceFiles,
                                    not lists:member(Source, FirstFiles)],
 
             %% Compile each of the sources
             {NewBins, ExistingBins} = compile_each(RestFiles, Config, Env,
-                                                     [], []),
+                                                   [], []),
 
             NewBins = FirstNewBins ++ NewBins,
             ExistingBins = FirstExistingBins ++ ExistingBins,
 
-            %% Construct the driver name and make sure priv/ exists
-            SoSpecs = so_specs(Config, AppFile, NewBins ++ ExistingBins),
-            ?INFO("Using specs ~p\n", [SoSpecs]),
-            lists:foreach(fun({SoName,_}) ->
-                                  ok = filelib:ensure_dir(SoName)
-                          end, SoSpecs),
+            %% Construct the target filename and make sure that the
+            %% target directory exists
+            Specs = port_specs(Config, AppFile, NewBins ++ ExistingBins),
+            ?INFO("Using specs ~p\n", [Specs]),
+            lists:foreach(fun({_, Target,_}) ->
+                                  ok = filelib:ensure_dir(Target);
+                             ({Target, _}) ->
+                                  ok = filelib:ensure_dir(Target)
+                          end, Specs),
 
-            %% Only relink if necessary, given the SoName
+            %% Only relink if necessary, given the Target
             %% and list of new binaries
             lists:foreach(
-              fun({SoName,Bins}) ->
+              fun({Target, Sources}) ->
+                      Bins = lists:map(fun source_to_bin/1, Sources),
                       AllBins = [sets:from_list(Bins),
                                  sets:from_list(NewBins)],
                       Intersection = sets:intersection(AllBins),
-                      case needs_link(SoName, sets:to_list(Intersection)) of
+                      case needs_link(Target, sets:to_list(Intersection)) of
                           true ->
                               Cmd = expand_command("LINK_TEMPLATE", Env,
                                                    string:join(Bins, " "),
-                                                   SoName),
+                                                   Target),
                               rebar_utils:sh(Cmd, [{env, Env}]);
                           false ->
-                              ?INFO("Skipping relink of ~s\n", [SoName]),
+                              ?INFO("Skipping relink of ~s\n", [Target]),
                               ok
                       end
-              end, SoSpecs)
+              end, Specs)
     end.
 
 clean(Config, AppFile) ->
     %% Build a list of sources so as to derive all the bins we generated
-    Sources = expand_sources(rebar_config:get_list(Config, port_sources,
-                                                   ["c_src/*.c"]), []),
+    Sources = get_sources(Config),
     rebar_file_utils:delete_each([source_to_bin(S) || S <- Sources]),
 
-    %% Delete the .so file
-    ExtractSoName = fun({SoName, _}) -> SoName end,
-    rebar_file_utils:delete_each([ExtractSoName(S)
-                                  || S <- so_specs(Config, AppFile,
-                                                   expand_objects(Sources))]).
+    %% Delete the target file
+    ExtractTarget = fun({_, Target, _}) ->
+                            Target;
+                       ({Target, _}) ->
+                            Target
+                    end,
+    rebar_file_utils:delete_each([ExtractTarget(S)
+                                  || S <- port_specs(Config, AppFile,
+                                                     expand_objects(Sources))]).
 
 setup_env(Config) ->
     %% Extract environment values from the config (if specified) and
@@ -182,6 +195,31 @@ global_defines() ->
                  {Def, "1"}
          end
      end || D <- rebar_config:get_global(defines, [])].
+
+get_sources(Config) ->
+    case rebar_config:get_list(Config, port_specs, []) of
+        [] ->
+            expand_sources(rebar_config:get_list(Config, port_sources,
+                                                 ["c_src/*.c"]), []);
+        PortSpecs ->
+            expand_port_specs(PortSpecs)
+    end.
+
+expand_port_specs(Specs0) ->
+    Specs = lists:filter(fun({ArchRegex, _, _}) ->
+                                 rebar_utils:is_arch(ArchRegex);
+                            ({_, _}) ->
+                                 true
+                         end, Specs0),
+    ExpandFileSpecs = fun(FileSpecs) ->
+                              lists:append(
+                                [filelib:wildcard(FS) || FS <- FileSpecs])
+                      end,
+    lists:append(lists:map(fun({_, _, FileSpecs}) ->
+                                   ExpandFileSpecs(FileSpecs);
+                              ({_, FileSpecs}) ->
+                                   ExpandFileSpecs(FileSpecs)
+                           end, Specs)).
 
 expand_sources([], Acc) ->
     Acc;
@@ -444,17 +482,16 @@ default_env() ->
      {"darwin11.*-32", "LDFLAGS", "-arch i386 $LDFLAGS"}
     ].
 
-
 source_to_bin(Source) ->
     SrcExt = filename:extension(Source),
     BinExt = object_extension(),
     filename:rootname(Source, SrcExt) ++ BinExt.
 
-so_specs(Config, AppFile, Bins) ->
-    Specs = make_so_specs(Config, AppFile, Bins),
+port_specs(Config, AppFile, Bins) ->
+    Specs = make_port_specs(Config, AppFile, Bins),
     case os:type() of
         {win32, nt} ->
-            [switch_so_to_dll(SoSpec) || SoSpec <- Specs];
+            [switch_to_dll_or_exe(Spec) || Spec <- Specs];
         _ ->
             Specs
     end.
@@ -467,15 +504,37 @@ object_extension() ->
             ".o"
     end.
 
-switch_so_to_dll(Orig = {Name, Spec}) ->
+switch_to_dll_or_exe(Orig = {Name, Spec}) ->
     case filename:extension(Name) of
         ".so" ->
             {filename:rootname(Name, ".so") ++ ".dll", Spec};
+        [] ->
+            {Name ++ ".exe", Spec};
         _ ->
             %% Not a .so; leave it
             Orig
     end.
 
+make_port_specs(Config, AppFile, Bins) ->
+    case rebar_config:get(Config, port_specs, undefined) of
+        undefined ->
+            make_so_specs(Config, AppFile, Bins);
+        PortSpecs ->
+            %% filter based on ArchRegex
+            Specs0 = lists:filter(fun({ArchRegex, _Target, _Sources}) ->
+                                          rebar_utils:is_arch(ArchRegex);
+                                     (_) ->
+                                          true
+                                  end, PortSpecs),
+            %% drop ArchRegex from specs
+            lists:map(fun({_, Target, Sources}) ->
+                              {Target, Sources};
+                         (Spec) ->
+                              Spec
+                      end, Specs0)
+    end.
+
+%% DEPRECATED
 make_so_specs(Config, AppFile, Bins) ->
     case rebar_config:get(Config, so_specs, undefined) of
         undefined ->
