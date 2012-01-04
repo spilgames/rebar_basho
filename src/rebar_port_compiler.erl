@@ -198,7 +198,8 @@ expand_sources([Spec | Rest], Acc) ->
     expand_sources(Rest, Acc2).
 
 expand_objects(Sources) ->
-    [filename:join([filename:dirname(F), filename:basename(F) ++ ".o"])
+    Ext = object_extension(),
+    [filename:join([filename:dirname(F), filename:basename(F) ++ Ext])
      || F <- Sources].
 
 compile_each([], _Config, _Env, NewBins, ExistingBins) ->
@@ -444,10 +445,10 @@ default_env() ->
     ].
 
 
-
 source_to_bin(Source) ->
-    Ext = filename:extension(Source),
-    filename:rootname(Source, Ext) ++ ".o".
+    SrcExt = filename:extension(Source),
+    BinExt = object_extension(),
+    filename:rootname(Source, SrcExt) ++ BinExt.
 
 so_specs(Config, AppFile, Bins) ->
     Specs = make_so_specs(Config, AppFile, Bins),
@@ -456,6 +457,14 @@ so_specs(Config, AppFile, Bins) ->
             [switch_so_to_dll(SoSpec) || SoSpec <- Specs];
         _ ->
             Specs
+    end.
+
+object_extension() ->
+    case os:type() of
+        {win32, nt} ->
+            ".obj";
+        _ ->
+            ".o"
     end.
 
 switch_so_to_dll(Orig = {Name, Spec}) ->
