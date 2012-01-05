@@ -99,6 +99,7 @@ compile(Config, AppFile) ->
 
     SourceFiles = get_sources(Config),
     Env = setup_env(Config),
+    DSOEnv = setup_env(Config, default_env_shared()),
 
     %% Allow the user to specify that dependent files get built first
     FirstFiles = expand_sources(rebar_config:get(Config,
@@ -146,7 +147,8 @@ compile(Config, AppFile) ->
                       Intersection = sets:intersection(AllBins),
                       case needs_link(Target, sets:to_list(Intersection)) of
                           true ->
-                              Cmd = expand_command("LINK_TEMPLATE", Env,
+                              Env1 = select_env(Target, Env, DSOEnv),
+                              Cmd = expand_command("LINK_TEMPLATE", Env1,
                                                    string:join(Bins, " "),
                                                    Target),
                               rebar_utils:sh(Cmd, [{env, Env}]);
@@ -173,18 +175,21 @@ clean(Config, AppFile) ->
                                                      expand_objects(Sources))]).
 
 setup_env(Config) ->
-    %% Extract environment values from the config (if specified) and
-    %% merge with the default for this operating system. This enables
-    %% max flexibility for users.
-    DefaultEnvs  = filter_envs(default_env(), []),
-    PortEnvs = rebar_config:get_list(Config, port_envs, []),
-    OverrideEnvs = global_defines() ++ filter_envs(PortEnvs, []),
-    RawEnv = apply_defaults(os_env(), DefaultEnvs) ++ OverrideEnvs,
-    expand_vars_loop(merge_each_var(RawEnv, [])).
+    setup_env(Config, []).
 
 %% ===================================================================
 %% Internal functions
 %% ===================================================================
+
+setup_env(Config, ExtraEnv) ->
+    %% Extract environment values from the config (if specified) and
+    %% merge with the default for this operating system. This enables
+    %% max flexibility for users.
+    DefaultEnvs  = filter_envs(ExtraEnv ++ default_env(), []),
+    PortEnvs = rebar_config:get_list(Config, port_envs, []),
+    OverrideEnvs = global_defines() ++ filter_envs(PortEnvs, []),
+    RawEnv = apply_defaults(os_env(), DefaultEnvs) ++ OverrideEnvs,
+    expand_vars_loop(merge_each_var(RawEnv, [])).
 
 global_defines() ->
     [begin
@@ -439,6 +444,14 @@ erl_interface_dir(Subdir) ->
         Dir -> Dir
     end.
 
+select_env(Target, Env, DSOEnv) ->
+    case filename:extension(Target) of
+        [] ->
+            Env;
+        Ext when Ext =:= ".so" orelse Ext =:= ".dll" ->
+            DSOEnv
+    end.
+
 default_env() ->
     [
      {"CXX_TEMPLATE",
@@ -454,10 +467,7 @@ default_env() ->
                                   " "])},
      {"ERL_LDFLAGS", " -L$ERL_EI_LIBDIR -lerl_interface -lei"},
      {"DRV_CFLAGS", "-g -Wall -fPIC $ERL_CFLAGS"},
-     {"DRV_LDFLAGS", "-shared $ERL_LDFLAGS"},
      {"ERL_EI_LIBDIR", erl_interface_dir(lib)},
-     {"darwin", "DRV_LDFLAGS",
-      "-bundle -flat_namespace -undefined suppress $ERL_LDFLAGS"},
      {"ERLANG_ARCH", rebar_utils:wordsize()},
      {"ERLANG_TARGET", rebar_utils:get_arch()},
 
@@ -480,6 +490,14 @@ default_env() ->
      {"darwin11.*-32", "CFLAGS", "-m32 $CFLAGS"},
      {"darwin11.*-32", "CXXFLAGS", "-m32 $CXXFLAGS"},
      {"darwin11.*-32", "LDFLAGS", "-arch i386 $LDFLAGS"}
+    ].
+
+%% default env only used for building a shared lib (DSO)
+default_env_shared() ->
+    [
+     {"DRV_LDFLAGS", "-shared $ERL_LDFLAGS"},
+     {"darwin", "DRV_LDFLAGS",
+      "-bundle -flat_namespace -undefined suppress $ERL_LDFLAGS"}
     ].
 
 source_to_bin(Source) ->
