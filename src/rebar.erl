@@ -91,7 +91,10 @@ run_aux(["version"]) ->
     ok;
 run_aux(Commands) ->
     %% Make sure crypto is running
-    ok = crypto:start(),
+    case crypto:start() of
+        ok -> ok;
+        {error,{already_started,crypto}} -> ok
+    end,
 
     %% Initialize logging system
     rebar_log:init(),
@@ -261,6 +264,8 @@ generate-appups   previous_release=path  Generate appup files
 eunit       [suite=foo]              Run eunit [test/foo_tests.erl] tests
 ct          [suites=] [case=]        Run common_test suites in ./test
 
+shell                                Starts an erlang shell for the app
+
 xref                                 Run cross reference analysis
 
 help                                 Show the program options
@@ -312,7 +317,7 @@ command_names() ->
     ["check-deps", "clean", "compile", "create", "create-app", "create-node",
      "ct", "delete-deps", "doc", "eunit", "generate", "generate-appups",
      "generate-upgrade", "get-deps", "help", "list-deps", "list-templates",
-     "update-deps", "overlay", "version", "xref"].
+     "update-deps", "overlay", "version", "xref", "shell"].
 
 unabbreviate_command_names([]) ->
     [];
