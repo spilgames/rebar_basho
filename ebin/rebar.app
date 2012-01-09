@@ -35,6 +35,7 @@
               rebar_upgrade,
               rebar_utils,
               rebar_xref,
+              rebar_shell,
               getopt,
               mustache ]},
   {registered, []},
@@ -73,7 +74,8 @@
                                rebar_eunit,
                                rebar_escripter,
                                rebar_edoc,
-                               rebar_xref
+                               rebar_xref,
+                               rebar_shell
                               ]},
 
                     {rel_dir, [
