@@ -65,7 +65,7 @@ main(Args) ->
             %% otherwise go to the shell for the next command.
             Script = <<"#!/usr/bin/env escript\n%%! -noshell -noinput\n",
                        ZipBin/binary>>,
-            case file:write_file("rebar", Script) of
+            case file:write_file("bin/rebar", Script) of
                 ok ->
                     ok;
                 {error, WriteError} ->
@@ -83,7 +83,7 @@ main(Args) ->
     %%  or write out script files on win32.
     case os:type() of
         {unix,_} ->
-            [] = os:cmd("chmod u+x rebar"),
+            [] = os:cmd("chmod u+x bin/rebar"),
             ok;
         {win32,_} ->
             write_windows_scripts(),
@@ -94,8 +94,7 @@ main(Args) ->
 
     %% Add a helpful message
     io:format("Congratulations! You now have a self-contained script called"
-              " \"rebar\" in\n"
-              "your current working directory. "
+              " \"rebar\" in the ./bin directory. "
               "Place this script anywhere in your path\n"
               "and you can use rebar to build OTP-compliant apps.\n").
 

@@ -1,0 +1,7 @@
+[0.0.0]
+- Baseline of Spilgames fork of rebar 
+ (commit:7882180b21bbb0add3b93ad2a6002b8b5f1539c)
+
+[0.0.1]
+- Adaptations of Makefile and build environment to be usable from within Deployar.
+- Added standard DOC directory

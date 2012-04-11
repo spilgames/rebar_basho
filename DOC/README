@@ -1,0 +1,4 @@
+This is the REBAR fork of Spil Games
+- Note: Since here we have a chicken/egg came first kinda problem. I have supplied a rebar binary (from version 0.0.0),
+  	so that we are able to build a new (and updated) rebar binary using a stable copy
+
