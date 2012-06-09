@@ -27,6 +27,7 @@
 -module(rebar_utils).
 
 -export([get_cwd/0,
+         pmap/2,
          is_arch/1,
          get_arch/0,
          wordsize/0,
@@ -55,6 +56,10 @@
 %% ====================================================================
 %% Public API
 %% ====================================================================
+pmap(F, L) ->
+    S = self(),
+    Pids = lists:map(fun(I) -> spawn(fun() -> pmap_f(S, F, I) end) end, L),
+    pmap_gather(Pids).
 
 get_cwd() ->
     {ok, Dir} = file:get_cwd(),
@@ -313,6 +318,16 @@ delayed_halt(Code) ->
 %% ====================================================================
 %% Internal functions
 %% ====================================================================
+pmap_gather([H|T]) ->
+    receive
+        {H, Ret} -> [Ret|pmap_gather(T)]
+    end;
+pmap_gather([]) ->
+    [].
+
+pmap_f(Parent, F, I) ->
+    Parent ! {self(), (catch F(I))}.
+
 
 get_deprecated_3(Get, Config, OldOpt, NewOpt, Default, When) ->
     case Get(Config, NewOpt, Default) of

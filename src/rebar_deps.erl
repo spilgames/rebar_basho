@@ -132,7 +132,9 @@ setup_env(_Config) ->
     {_AvailableDeps, MissingDeps} = find_deps(find, Deps),
 
     %% For each missing dep with a specified source, try to pull it.
-    PulledDeps = [use_source(D) || D <- MissingDeps, D#dep.source /= undefined],
+    %PulledDeps = [use_source(D) || D <- MissingDeps, D#dep.source /= undefined],
+    PulledDeps = rebar_utils:pmap(fun(D)-> use_source(D) end, 
+        [D || D <- MissingDeps, D#dep.source /= undefined] ),
 
     %% Add each pulled dep to our list of dirs for post-processing. This yields
     %% the necessary transitivity of the deps
