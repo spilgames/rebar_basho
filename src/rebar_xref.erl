@@ -60,7 +60,7 @@ xref(Config, _) ->
                                   [exports_not_used,
                                    undefined_function_calls]),
 
-    SupportedXrefs = [undefined_function_calls, undefined_functions, 
+    SupportedXrefs = [undefined_function_calls, undefined_functions,
                         locals_not_used, exports_not_used,
                         deprecated_function_calls, deprecated_functions],
 
@@ -129,19 +129,19 @@ code_path() ->
 
 filter_xref_results(XrefCheck, XrefResults) ->
     F = fun(Mod) ->
-                Attrs = 
+                Attrs =
                     try
-                        if 
+                        if
                             Mod =:= undefined -> [];
                             true -> kf(attributes, Mod:module_info())
-                        end                        
+                        end
                     catch
                         _Class:_Error -> []
                     end,
 
                 Ignore = kf(ignore_xref, Attrs),
 
-                Additional = 
+                Additional =
                     case XrefCheck of
                         exports_not_used -> [B:behaviour_info(callbacks) || B <- kf(behaviour, Attrs)];
                         _ -> []
@@ -157,10 +157,10 @@ filter_xref_results(XrefCheck, XrefResults) ->
 
     SearchModules = lists:usort(lists:map(
         fun(Res) ->
-            case Res of   
+            case Res of
                 {_, {Ma,_Fa,_Aa}} -> Ma;
                 {_, {{Ms,_Fs,_As},{_Mt,_Ft,_At}}} -> Ms;
-                _ -> io:format("no match: ~p\n", [Res]), undefined                
+                _ -> io:format("no match: ~p\n", [Res]), undefined
             end
         end, XrefResults)),
 
@@ -168,10 +168,10 @@ filter_xref_results(XrefCheck, XrefResults) ->
 
     lists:foldr(
         fun(XrefResult, Acc) ->
-            MFA = case XrefResult of                   
+            MFA = case XrefResult of
                 {_, {_, MFAt}} -> MFAt;
                 {_, MFAt} -> MFAt
-            end, 
+            end,
             case lists:member(MFA,Ignore) of
                 false -> [XrefResult | Acc];
                 _ -> Acc
@@ -187,25 +187,25 @@ kf(Key, List) ->
     end.
 
 display_xrefresult(Type, XrefResult) ->
-    
+
     { {SFile, SLine}, SMFA, TMFA } = case XrefResult of
         {MFASource, MFATarget} -> {find_mfa_source(MFASource), format_fa(MFASource), format_mfa(MFATarget)};
         MFATarget -> { find_mfa_source(MFATarget), format_fa(MFATarget), undefined}
     end,
     case Type of
-        undefined_function_calls -> 
+        undefined_function_calls ->
             ?CONSOLE("~s:~w: Warning ~s calls undefined function ~s (Xref)\n", [SFile, SLine, SMFA, TMFA]);
-        undefined_functions -> 
+        undefined_functions ->
             ?CONSOLE("~s:~w: Warning ~s is undefined function (Xref)\n", [SFile, SLine, SMFA]);
-        locals_not_used -> 
+        locals_not_used ->
             ?CONSOLE("~s:~w: Warning ~s is unused local function (Xref)\n", [SFile, SLine, SMFA]);
-        exports_not_used -> 
+        exports_not_used ->
             ?CONSOLE("~s:~w: Warning ~s is unused export (Xref)\n", [SFile, SLine, SMFA]);
-        deprecated_function_calls -> 
-            ?CONSOLE("~s:~w: Warning ~s calls deprecated function ~s (Xref)\n", [SFile, SLine, SMFA, TMFA]); 
-        deprecated_functions -> 
-            ?CONSOLE("~s:~w: Warning ~s is deprecated function (Xref)\n", [SFile, SLine, SMFA]); 
-        Other -> 
+        deprecated_function_calls ->
+            ?CONSOLE("~s:~w: Warning ~s calls deprecated function ~s (Xref)\n", [SFile, SLine, SMFA, TMFA]);
+        deprecated_functions ->
+            ?CONSOLE("~s:~w: Warning ~s is deprecated function (Xref)\n", [SFile, SLine, SMFA]);
+        Other ->
             ?CONSOLE("Warning ~s:~w: ~s - ~s xref check: ~s (Xref)\n", [SFile, SLine, SMFA, TMFA, Other])
     end.
 
