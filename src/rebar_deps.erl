@@ -238,6 +238,16 @@ set_global_deps_dir(Config, []) ->
     rebar_config:set_global(shared_deps_dir,
         rebar_config:get_local(Config, shared_deps_dir, EnvSharedDepsDir)),
 
+    EnvMinimizedDeps = case os:getenv("REBAR_MINIMIZED_DEPS") of
+                           "1" -> true;
+                           "true" -> true;
+                           _ -> false
+                       end,
+
+    rebar_config:set_global(minimized_deps,
+        rebar_config:get_local(Config, minimized_deps, EnvMinimizedDeps)),
+
+
     EnvCopyFromSharedDepsDir = case os:getenv("REBAR_COPY_FROM_SHARED_DEPS_DIR") of
                            "1" -> true;
                            "true" -> true;
@@ -560,9 +570,40 @@ download_source(AppDir, {git, Url, {branch, Branch}}) ->
     rebar_utils:sh(?FMT("git checkout -q origin/~s", [Branch]), [{cd, AppDir}]);
 download_source(AppDir, {git, Url, {tag, Tag}}) ->
     ok = filelib:ensure_dir(AppDir),
-    rebar_utils:sh(?FMT("git clone -n ~s ~s", [Url, filename:basename(AppDir)]),
-                   [{cd, filename:dirname(AppDir)}]),
-    rebar_utils:sh(?FMT("git checkout -q ~s", [Tag]), [{cd, AppDir}]);
+    %% TODO 
+    Minimized = deps_minimized() andalso string:substr(Url,1,3) =:= "git",
+    case Minimized of
+        false -> 
+            rebar_utils:sh(?FMT("git clone -n ~s ~s", [Url, filename:basename(AppDir)]),
+                           [{cd, filename:dirname(AppDir)}]),
+            rebar_utils:sh(?FMT("git checkout -q ~s", [Tag]), [{cd, AppDir}]);
+        true ->
+            ?DEBUG("Minimized dependency: ~s\n", [AppDir]),
+            %% Create an empty directory
+            filelib:ensure_dir(AppDir++"/"),
+            %% Initialize an empty repository
+            rebar_utils:sh(?FMT("git init", []), [{cd, AppDir}]),
+            %% Now perform a shallow checkout (only populates .git)
+            %% --include-tag is not supported everywhere
+            {ok, Output} = rebar_utils:sh(?FMT("git fetch-pack -q --no-progress --depth=1 ~s refs/tags/~s" , 
+                [Url, Tag]), [{cd, AppDir}]),
+            %% We need to find a reference to the last commit.
+            %% You would expect 'shallow' reference to work, but it appears
+            %% to point to the previous commit.
+            %% The output of fetch-pack can contain 'keep a32bc...\n cb84h...'
+            %% TODO: very ugly to rely on parsing the output
+            LastCommitHash = case string:tokens(Output, " \n") of
+                                [[$k,$e,$e,$p|_],Second|_]  -> Second;
+                                [First|_] -> First
+                            end,
+            ?DEBUG("Using commit hash: ~p\n",[LastCommitHash]),
+            %% Checkout the latest commit, this pulls in the src etc
+            %% Here we want to use something else
+            rebar_utils:sh(?FMT("git checkout ~s", [LastCommitHash]), [{cd, AppDir}]),
+            %% We now still need to make sure there is a valid tag
+            %% because we didnt include the tags previously.
+            rebar_utils:sh(?FMT("git tag -a \"~s\" -m \"DEPLOYAR\"", [Tag]), [{cd, AppDir}])
+    end;
 download_source(AppDir, {git, Url, Rev}) ->
     ok = filelib:ensure_dir(AppDir),
     rebar_utils:sh(?FMT("git clone -n ~s ~s", [Url, filename:basename(AppDir)]),
@@ -751,3 +792,6 @@ format_source(App, {_, Url, Rev}) ->
     ?FMT("~p REV ~s ~s", [App, Rev, Url]);
 format_source(App, undefined) ->
     ?FMT("~p", [App]).
+
+deps_minimized() ->
+    rebar_config:get_global(minimized_deps, false).
