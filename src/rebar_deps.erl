@@ -475,7 +475,8 @@ retrieve_source_and_retry(Dep, Count, Force) ->
     {true, TargetDir} = get_deps_dir(Dep#dep.app),
     case get_shared_deps_dir(Dep) of
         {false, _} ->
-            ok;
+            %% not using shared_deps_dir functionality, proceed as usual
+            download_dep(Dep, TargetDir);
         {true, SharedTargetDir} ->
             %% If the (possibly versioned) downloads dir already exists, just
             %% skip downloading the source
