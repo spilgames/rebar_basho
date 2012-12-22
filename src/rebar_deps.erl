@@ -56,7 +56,7 @@ preprocess(Config, _) ->
     Config1 = set_shared_deps_dir(Config, get_shared_deps_dir(Config, [])),
     %% We also set a shared_deps_dir. If set, we use this to download
     %% dependencies and then symlink from deps_dir to shared_deps_dir
-    Config2 = set_global_deps_dir(Config,
+    Config2 = set_global_deps_dir(Config1,
         rebar_config:get_global(Config1, deps_dir, [])),
 
     %% Get the list of deps for the current working directory and identify those
