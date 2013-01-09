@@ -550,7 +550,7 @@ retrieve_source_and_retry(Config, Dep, Count, Force) ->
     {true, TargetDir} = get_deps_dir(Config, Dep#dep.app),
     _ = case get_spil_shared_deps_dir(Config, Dep) of
         {false, _} ->
-            ok;
+            download_dep(Dep, TargetDir);
         {true, SharedTargetDir} ->
             %% If the (possibly versioned) downloads dir already exists, just
             %% skip downloading the source
