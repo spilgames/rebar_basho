@@ -28,7 +28,8 @@
 
 %% -------------------------------------------------------------------
 %% This module borrows heavily from http://github.com/etnt/exrefcheck project as
-%% written by Torbjorn Tornkvist <tobbe@kreditor.se>, Daniel Luna and others.
+%% written by Torbjorn Tornkvist <tobbe@kreditor.se>, Daniel Luna
+%% <daniel@lunas.se> and others.
 %% -------------------------------------------------------------------
 -module(rebar_xref).
 
@@ -43,29 +44,40 @@
 xref(Config, _) ->
     %% Spin up xref
     {ok, _} = xref:start(xref),
-    ok = xref:set_library_path(xref, code_path()),
+    ok = xref:set_library_path(xref, code_path(Config)),
 
     xref:set_default(xref, [{warnings,
                              rebar_config:get(Config, xref_warnings, false)},
-                            {verbose, rebar_config:is_verbose()}]),
+                            {verbose, rebar_config:is_verbose(Config)}]),
 
     {ok, _} = xref:add_directory(xref, "ebin"),
 
     %% Save the code path prior to doing anything
     OrigPath = code:get_path(),
-    true = code:add_path(filename:join(rebar_utils:get_cwd(), "ebin")),
+    true = code:add_path(rebar_utils:ebin_dir()),
 
     %% Get list of xref checks we want to run
-    ConfXrefChecks = rebar_config:get(Config, xref_checks,
+    XrefChecks = rebar_config:get(Config, xref_checks,
                                   [exports_not_used,
                                    undefined_function_calls]),
 
-    SupportedXrefs = [undefined_function_calls, undefined_functions,
-                        locals_not_used, exports_not_used,
-                        deprecated_function_calls, deprecated_functions],
+    %% Look for exports that are unused by anything
+    ExportsNoWarn =
+        case lists:member(exports_not_used, XrefChecks) of
+            true ->
+                check_exports_not_used();
+            false ->
+                true
+        end,
 
-    XrefChecks = sets:to_list(sets:intersection(sets:from_list(SupportedXrefs), sets:from_list(ConfXrefChecks))),
-    XrefNoWarn = xref_checks(XrefChecks),
+    %% Look for calls to undefined functions
+    UndefNoWarn =
+        case lists:member(undefined_function_calls, XrefChecks) of
+            true ->
+                check_undefined_function_calls();
+            false ->
+                true
+        end,
 
     %% Run custom queries
     QueryChecks = rebar_config:get(Config, xref_queries, []),
@@ -77,34 +89,37 @@ xref(Config, _) ->
     %% Stop xref
     stopped = xref:stop(xref),
 
-    case lists:member(false, [XrefNoWarn, QueryNoWarn]) of
+    case lists:member(false, [ExportsNoWarn, UndefNoWarn, QueryNoWarn]) of
         true ->
-            case rebar_config:get(Config, xref_strict, true) of
-                true -> ?ABORT;
-                false -> ?WARN("xref failed!", [])
-            end;
+            ?FAIL;
         false ->
             ok
     end.
 
-%%   ===================================================================
+%% ===================================================================
 %% Internal functions
 %% ===================================================================
 
-xref_checks(XrefChecks) ->
-    XrefWarnCount = lists:foldr(
-        fun(XrefCheck, Acc) ->
-            Results = check_xref(XrefCheck),
-            FilteredResults =filter_xref_results(XrefCheck, Results),
-            lists:foreach(fun({Type, Res}) -> display_xrefresult(Type, Res) end, FilteredResults),
-            Acc + length(FilteredResults)
-        end,
-        0, XrefChecks),
-    XrefWarnCount =:= 0.
+check_exports_not_used() ->
+    {ok, UnusedExports0} = xref:analyze(xref, exports_not_used),
+    UnusedExports = filter_away_ignored(UnusedExports0),
 
-check_xref(XrefCheck) ->
-    {ok, Results} = xref:analyze(xref, XrefCheck),
-    lists:map(fun(El) -> {XrefCheck, El} end, Results).
+    %% Report all the unused functions
+    display_mfas(UnusedExports, "is unused export (Xref)"),
+    UnusedExports =:= [].
+
+check_undefined_function_calls() ->
+    {ok, UndefinedCalls0} = xref:analyze(xref, undefined_function_calls),
+    UndefinedCalls =
+        [{find_mfa_source(Caller), format_fa(Caller), format_mfa(Target)}
+         || {Caller, Target} <- UndefinedCalls0],
+
+    lists:foreach(
+      fun({{Source, Line}, FunStr, Target}) ->
+              ?CONSOLE("~s:~w: Warning ~s calls undefined function ~s\n",
+                       [Source, Line, FunStr, Target])
+      end, UndefinedCalls),
+    UndefinedCalls =:= [].
 
 check_query({Query, Value}) ->
     {ok, Answer} = xref:q(xref, Query),
@@ -117,97 +132,50 @@ check_query({Query, Value}) ->
             true
     end.
 
-code_path() ->
-    [P || P <- code:get_path(),
-          filelib:is_dir(P)] ++ [filename:join(rebar_utils:get_cwd(), "ebin")].
+code_path(Config) ->
+    %% Slight hack to ensure that sub_dirs get properly included
+    %% in code path for xref -- otherwise one gets a lot of undefined
+    %% functions, even though those functions are present as part
+    %% of compilation. H/t to @dluna. Long term we should tie more
+    %% properly into the overall compile code path if possible.
+    BaseDir = rebar_config:get_xconf(Config, base_dir),
+    [P || P <- code:get_path() ++
+              [filename:join(BaseDir, filename:join(SubDir, "ebin"))
+               || SubDir <- rebar_config:get(Config, sub_dirs, [])],
+          filelib:is_dir(P)].
 
 %%
 %% Ignore behaviour functions, and explicitly marked functions
 %%
-%% Functions can be ignored by using
-%% -ignore_xref([{F, A}, {M, F, A}...]).
+filter_away_ignored(UnusedExports) ->
+    %% Functions can be ignored by using
+    %% -ignore_xref([{F, A}, ...]).
 
-filter_xref_results(XrefCheck, XrefResults) ->
+    %% Setup a filter function that builds a list of behaviour callbacks and/or
+    %% any functions marked to ignore. We then use this list to mask any
+    %% functions marked as unused exports by xref
     F = fun(Mod) ->
-                Attrs =
-                    try
-                        if
-                            Mod =:= undefined -> [];
-                            true -> kf(attributes, Mod:module_info())
-                        end
-                    catch
-                        _Class:_Error -> []
-                    end,
+                Attrs  = Mod:module_info(attributes),
+                Ignore = keyall(ignore_xref, Attrs),
+                Callbacks = [B:behaviour_info(callbacks)
+                             || B <- keyall(behaviour, Attrs)],
+                [{Mod, F, A} || {F, A} <- Ignore ++ lists:flatten(Callbacks)]
+        end,
+    AttrIgnore =
+        lists:flatten(
+          lists:map(F, lists:usort([M || {M, _, _} <- UnusedExports]))),
+    [X || X <- UnusedExports, not lists:member(X, AttrIgnore)].
 
-                Ignore = kf(ignore_xref, Attrs),
+keyall(Key, List) ->
+    lists:flatmap(fun({K, L}) when Key =:= K -> L; (_) -> [] end, List).
 
-                Additional =
-                    case XrefCheck of
-                        exports_not_used -> [B:behaviour_info(callbacks) || B <- kf(behaviour, Attrs)];
-                        _ -> []
-                    end,
-
-                lists:foldl(fun(El,Acc) ->
-                                case El of
-                                    {F, A} -> [{Mod,F,A} | Acc];
-                                    {M, F, A} -> [{M,F,A} | Acc]
-                                end
-                            end, [], Ignore ++ lists:flatten(Additional))
-    end,
-
-    SearchModules = lists:usort(lists:map(
-        fun(Res) ->
-            case Res of
-                {_, {Ma,_Fa,_Aa}} -> Ma;
-                {_, {{Ms,_Fs,_As},{_Mt,_Ft,_At}}} -> Ms;
-                _ -> io:format("no match: ~p\n", [Res]), undefined
-            end
-        end, XrefResults)),
-
-    Ignore = lists:flatten(lists:map(F, SearchModules)),
-
-    lists:foldr(
-        fun(XrefResult, Acc) ->
-            MFA = case XrefResult of
-                {_, {_, MFAt}} -> MFAt;
-                {_, MFAt} -> MFAt
-            end,
-            case lists:member(MFA,Ignore) of
-                false -> [XrefResult | Acc];
-                _ -> Acc
-            end
-        end, [], XrefResults).
-
-kf(Key, List) ->
-    case lists:keyfind(Key, 1, List) of
-        {Key, Value} ->
-            Value;
-        false ->
-            []
-    end.
-
-display_xrefresult(Type, XrefResult) ->
-
-    { {SFile, SLine}, SMFA, TMFA } = case XrefResult of
-        {MFASource, MFATarget} -> {find_mfa_source(MFASource), format_fa(MFASource), format_mfa(MFATarget)};
-        MFATarget -> { find_mfa_source(MFATarget), format_fa(MFATarget), undefined}
-    end,
-    case Type of
-        undefined_function_calls ->
-            ?CONSOLE("~s:~w: Warning ~s calls undefined function ~s (Xref)\n", [SFile, SLine, SMFA, TMFA]);
-        undefined_functions ->
-            ?CONSOLE("~s:~w: Warning ~s is undefined function (Xref)\n", [SFile, SLine, SMFA]);
-        locals_not_used ->
-            ?CONSOLE("~s:~w: Warning ~s is unused local function (Xref)\n", [SFile, SLine, SMFA]);
-        exports_not_used ->
-            ?CONSOLE("~s:~w: Warning ~s is unused export (Xref)\n", [SFile, SLine, SMFA]);
-        deprecated_function_calls ->
-            ?CONSOLE("~s:~w: Warning ~s calls deprecated function ~s (Xref)\n", [SFile, SLine, SMFA, TMFA]);
-        deprecated_functions ->
-            ?CONSOLE("~s:~w: Warning ~s is deprecated function (Xref)\n", [SFile, SLine, SMFA]);
-        Other ->
-            ?CONSOLE("Warning ~s:~w: ~s - ~s xref check: ~s (Xref)\n", [SFile, SLine, SMFA, TMFA, Other])
-    end.
+display_mfas([], _Message) ->
+    ok;
+display_mfas([{_Mod, Fun, Args} = MFA | Rest], Message) ->
+    {Source, Line} = find_mfa_source(MFA),
+    ?CONSOLE("~s:~w: Warning: function ~s/~w ~s\n",
+             [Source, Line, Fun, Args, Message]),
+    display_mfas(Rest, Message).
 
 format_mfa({M, F, A}) ->
     ?FMT("~s:~s/~w", [M, F, A]).
@@ -225,6 +193,7 @@ safe_element(N, Tuple) ->
         Value ->
             Value
     end.
+
 
 %%
 %% Given a MFA, find the file and LOC where it's defined. Note that

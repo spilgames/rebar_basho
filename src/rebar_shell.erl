@@ -4,7 +4,7 @@
 %%
 %% rebar: Erlang Build Tools
 %%
-%% Copyright (c) 2012 Thijs Terlouw (Thijs.Terlouw@spilgames.com)
+%% Copyright (c) 2011 Trifork
 %%
 %% Permission is hereby granted, free of charge, to any person obtaining a copy
 %% of this software and associated documentation files (the "Software"), to deal
@@ -24,32 +24,33 @@
 %% OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 %% THE SOFTWARE.
 %% -------------------------------------------------------------------
-%% @author Thijs Terlouw <thijsterlouw@spilgames.com>
-%% @doc This tests functionality in the rebar_deps.
-%% -------------------------------------------------------------------
--module(rebar_deps_eunit).
 
--compile(export_all).
+-module(rebar_shell).
+-author("Kresten Krab Thorup <krab@trifork.com>").
 
--include_lib("eunit/include/eunit.hrl").
+-include("rebar.hrl").
 
-kv_test_() ->
-    [
-        ?_assertEqual(default, rebar_deps:get_value(a, default)),
-        ?_assertEqual(ok, rebar_deps:set_value(a, b)),
-        ?_assertEqual(b, rebar_deps:get_value(a, default)),
-        ?_assertEqual(ok, rebar_deps:del_key(a)),  
-        ?_assertEqual(default, rebar_deps:get_value(a, default))                                    
-    ].
+-export([shell/2]).
 
-kv_complex_key_test_() ->
-    Key1 = {a,1},
-    Key2 = {a,2},
-    [
-        ?_assertEqual(default, rebar_deps:get_value(Key1, default)),
-        ?_assertEqual(ok, rebar_deps:set_value(Key1, [{a,1}])),
-        ?_assertEqual(ok, rebar_deps:set_value(Key2, [{a,2}])),
-        ?_assertEqual([{a,1}], rebar_deps:get_value(Key1, default)),
-        ?_assertEqual(ok, rebar_deps:del_key(Key1)), 
-        ?_assertEqual([{a,2}], rebar_deps:get_value(Key2, default))
-    ].
+shell(_Config, _AppFile) ->
+    ?CONSOLE("NOTICE: Using experimental 'shell' command~n", []),
+    %% backwards way to say we only want this executed
+    %% for the "top level" directory
+    case is_deps_dir(rebar_utils:get_cwd()) of
+        false ->
+            true = code:add_pathz(rebar_utils:ebin_dir()),
+            user_drv:start(),
+            %% this call never returns (until user quits shell)
+            shell:server(false, false);
+        true ->
+            ok
+    end,
+    ok.
+
+is_deps_dir(Dir) ->
+    case lists:reverse(filename:split(Dir)) of
+        [_, "deps" | _] ->
+            true;
+        _V ->
+            false
+    end.

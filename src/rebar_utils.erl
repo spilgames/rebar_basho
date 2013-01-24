@@ -42,16 +42,18 @@
          prop_check/3,
          expand_code_path/0,
          expand_env_variable/3,
-         vcs_vsn/2,
-         vcs_vsn_delete/2,
+         vcs_vsn/3,
+         vcs_vsn_delete/3,
          deprecated/3, deprecated/4,
-         get_deprecated_global/3, get_deprecated_global/4,
+         get_deprecated_global/4, get_deprecated_global/5,
+         get_experimental_global/3, get_experimental_local/3,
          get_deprecated_list/4, get_deprecated_list/5,
          get_deprecated_local/4, get_deprecated_local/5,
          delayed_halt/1,
          erl_opts/1,
-         src_dirs/1
-        ]).
+         src_dirs/1,
+         ebin_dir/0,
+         processing_base_dir/1, processing_base_dir/2]).
 
 -include("rebar.hrl").
 
@@ -74,8 +76,7 @@ is_arch(ArchRegex) ->
 get_arch() ->
     Words = wordsize(),
     erlang:system_info(otp_release) ++ "-"
-        ++ erlang:system_info(system_architecture) ++ "-" ++ Words
-        ++ "-" ++ os_family().
+        ++ erlang:system_info(system_architecture) ++ "-" ++ Words.
 
 wordsize() ->
     try erlang:system_info({wordsize, external}) of
@@ -175,7 +176,7 @@ prop_check(false, Msg, Args) -> ?ABORT(Msg, Args).
 
 %% Convert all the entries in the code path to absolute paths.
 expand_code_path() ->
-    CodePath = lists:foldl(fun (Path, Acc) ->
+    CodePath = lists:foldl(fun(Path, Acc) ->
                                    [filename:absname(Path) | Acc]
                            end, [], code:get_path()),
     code:set_path(lists:reverse(CodePath)).
@@ -199,37 +200,37 @@ expand_env_variable(InStr, VarName, RawVarValue) ->
             re:replace(InStr, RegEx, [VarValue, "\\2"], ReOpts)
     end.
 
-vcs_vsn(Vcs, Dir) ->
+vcs_vsn(Config, Vcs, Dir) ->
     Key = {Vcs, Dir},
-    try ets:lookup_element(rebar_vsn_cache, Key, 2)
-    catch
-        error:badarg ->
+    Cache = rebar_config:get_xconf(Config, vsn_cache),
+    case dict:find(Key, Cache) of
+        error ->
             VsnString = vcs_vsn_1(Vcs, Dir),
-            ets:insert(rebar_vsn_cache, {Key, VsnString}),
-            VsnString
+            Cache1 = dict:store(Key, VsnString, Cache),
+            Config1 = rebar_config:set_xconf(Config, vsn_cache, Cache1),
+            {Config1, VsnString};
+        {ok, VsnString} ->
+            {Config, VsnString}
     end.
 
-vcs_vsn_delete(Vcs, Dir) ->
+vcs_vsn_delete(Config, Vcs, Dir) ->
     Key = {Vcs, Dir},
-    ets:delete(rebar_vsn_cache, Key).
+    Cache = rebar_config:get_xconf(Config, vsn_cache),
+    Cache1 = dict:erase(Key, Cache),
+    rebar_config:set_xconf(Config, vsn_cache, Cache1).
 
+get_deprecated_global(Config, OldOpt, NewOpt, When) ->
+    get_deprecated_global(Config, OldOpt, NewOpt, undefined, When).
 
-get_deprecated_global(OldOpt, NewOpt, When) ->
-    get_deprecated_global(OldOpt, NewOpt, undefined, When).
+get_deprecated_global(Config, OldOpt, NewOpt, Default, When) ->
+    get_deprecated_3(fun rebar_config:get_global/3,
+                     Config, OldOpt, NewOpt, Default, When).
 
-get_deprecated_global(OldOpt, NewOpt, Default, When) ->
-    case rebar_config:get_global(NewOpt, Default) of
-        Default ->
-            case rebar_config:get_global(OldOpt, Default) of
-                Default ->
-                    Default;
-                Old ->
-                    deprecated(OldOpt, NewOpt, When),
-                    Old
-            end;
-        New ->
-            New
-    end.
+get_experimental_global(Config, Opt, Default) ->
+    get_experimental_3(fun rebar_config:get_global/3, Config, Opt, Default).
+
+get_experimental_local(Config, Opt, Default) ->
+    get_experimental_3(fun rebar_config:get_local/3, Config, Opt, Default).
 
 get_deprecated_list(Config, OldOpt, NewOpt, When) ->
     get_deprecated_list(Config, OldOpt, NewOpt, undefined, When).
@@ -293,9 +294,9 @@ delayed_halt(Code) ->
 -spec erl_opts(rebar_config:config()) -> list().
 erl_opts(Config) ->
     RawErlOpts = filter_defines(rebar_config:get(Config, erl_opts, []), []),
-    GlobalDefines = [{d, list_to_atom(D)} ||
-                        D <- rebar_config:get_global(defines, [])],
-    Opts = GlobalDefines ++ RawErlOpts,
+    Defines = [{d, list_to_atom(D)} ||
+                  D <- rebar_config:get_xconf(Config, defines, [])],
+    Opts = Defines ++ RawErlOpts,
     case proplists:is_defined(no_debug_info, Opts) of
         true ->
             [O || O <- Opts, O =/= no_debug_info];
@@ -303,19 +304,25 @@ erl_opts(Config) ->
             [debug_info|Opts]
     end.
 
--spec src_dirs(SrcDirs::[string()]) -> [file:filename(), ...].
+-spec src_dirs([string()]) -> [file:filename(), ...].
 src_dirs([]) ->
     ["src"];
 src_dirs(SrcDirs) ->
     SrcDirs.
 
+ebin_dir() ->
+    filename:join(get_cwd(), "ebin").
+
+processing_base_dir(Config) ->
+    Cwd = rebar_utils:get_cwd(),
+    processing_base_dir(Config, Cwd).
+
+processing_base_dir(Config, Dir) ->
+    Dir =:= rebar_config:get_xconf(Config, base_dir).
+
 %% ====================================================================
 %% Internal functions
 %% ====================================================================
-
-os_family() ->
-    {OsFamily, _} = os:type(),
-    atom_to_list(OsFamily).
 
 get_deprecated_3(Get, Config, OldOpt, NewOpt, Default, When) ->
     case Get(Config, NewOpt, Default) of
@@ -331,6 +338,16 @@ get_deprecated_3(Get, Config, OldOpt, NewOpt, Default, When) ->
             New
     end.
 
+get_experimental_3(Get, Config, Opt, Default) ->
+    Val = Get(Config, Opt, Default),
+    case Val of
+        Default ->
+            Default;
+        Val ->
+            ?CONSOLE("NOTICE: Using experimental option '~p'~n", [Opt]),
+            Val
+    end.
+
 %% We do the shell variable substitution ourselves on Windows and hope that the
 %% command doesn't use any other shell magic.
 patch_on_windows(Cmd, Env) ->
@@ -341,7 +358,8 @@ patch_on_windows(Cmd, Env) ->
                                        expand_env_variable(Acc, Key, Value)
                                end, Cmd, Env),
             %% Remove left-over vars
-            re:replace(Cmd1, "\\\$\\w+|\\\${\\w+}", "", [global, {return, list}]);
+            re:replace(Cmd1, "\\\$\\w+|\\\${\\w+}", "",
+                       [global, {return, list}]);
         _ ->
             Cmd
     end.
@@ -460,20 +478,11 @@ vcs_vsn_1(Vcs, Dir) ->
             end
     end.
 
-vcs_vsn_cmd(git) ->
-    %% git describe the last commit that touched CWD
-    %% required for correct versioning of apps in subdirs, such as apps/app1
-    case os:type() of
-        {win32,nt} ->
-            "FOR /F \"usebackq tokens=* delims=\" %i in "
-                "(`git log -n 1 \"--pretty=format:%h\" .`) do "
-                "@git describe --always --tags %i";
-        _ ->
-            "git describe --always --tags `git log -n 1 --pretty=format:%h .`"
-    end;
-vcs_vsn_cmd(hg)  -> "hg identify -i";
-vcs_vsn_cmd(bzr) -> "bzr revno";
-vcs_vsn_cmd(svn) -> "svnversion";
+vcs_vsn_cmd(git)    -> "git describe --always --tags";
+vcs_vsn_cmd(hg)     -> "hg identify -i";
+vcs_vsn_cmd(bzr)    -> "bzr revno";
+vcs_vsn_cmd(svn)    -> "svnversion";
+vcs_vsn_cmd(fossil) -> "fossil info";
 vcs_vsn_cmd({cmd, _Cmd}=Custom) -> Custom;
 vcs_vsn_cmd(Version) -> {unknown, Version}.
 
@@ -485,7 +494,6 @@ vcs_vsn_invoke(Cmd, Dir) ->
 %% Filter a list of erl_opts platform_define options such that only
 %% those which match the provided architecture regex are returned.
 %%
--spec filter_defines(ErlOpts::list(), Acc::list()) -> list().
 filter_defines([], Acc) ->
     lists:reverse(Acc);
 filter_defines([{platform_define, ArchRegex, Key} | Rest], Acc) ->
