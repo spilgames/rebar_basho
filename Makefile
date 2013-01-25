@@ -9,6 +9,9 @@ all:
 clean:
 	@rm -rf rebar ebin/*.beam inttest/rt.work rt.work .eunit
 
+distclean: clean
+	@rm -rf deps
+
 debug:
 	@./bootstrap debug
 

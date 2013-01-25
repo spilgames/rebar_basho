@@ -57,7 +57,7 @@ compile(Config, _AppFile) ->
                             fun compile_neo/3, [{check_last_mod,false}]).
 
 %% ============================================================================
-%% Public API
+%% Internal functions
 %% ============================================================================
 
 neotoma_opts(Config) ->
@@ -80,7 +80,7 @@ compile_neo(Source, Target, Config) ->
                    "    https://github.com/seancribbs/neotoma~n"
                    " and install it into your erlang library dir~n"
                    "===============================================~n~n", []),
-            ?ABORT;
+            ?FAIL;
         _ ->
             case needs_compile(Source, Target, Config) of
                 true ->
@@ -104,7 +104,7 @@ do_compile(Source, _Target, Config) ->
         Reason ->
             ?ERROR("Compiling peg ~s failed:~n  ~p~n",
                    [Source, Reason]),
-            ?ABORT
+            ?FAIL
     end.
 
 needs_compile(Source, Target, Config) ->

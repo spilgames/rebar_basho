@@ -24,11 +24,9 @@
 %% OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 %% THE SOFTWARE.
 %% -------------------------------------------------------------------
--module(rebar_asn1_compiler).
--author('ruslan@babayev.com').
+-module(rebar_dia_compiler).
 
--export([compile/2,
-         clean/2]).
+-export([compile/2, clean/2]).
 
 -include("rebar.hrl").
 
@@ -38,43 +36,51 @@
 
 -spec compile(rebar_config:config(), file:filename()) -> 'ok'.
 compile(Config, _AppFile) ->
-    rebar_base_compiler:run(Config, filelib:wildcard("asn1/*.asn1"),
-                            "asn1", ".asn1", "src", ".erl",
-                            fun compile_asn1/3).
+    rebar_base_compiler:run(Config, filelib:wildcard("dia/*.dia"),
+                            "dia", ".dia", "src", ".erl",
+                            fun compile_dia/3).
 
 -spec clean(rebar_config:config(), file:filename()) -> 'ok'.
 clean(_Config, _AppFile) ->
-    GeneratedFiles = asn_generated_files("asn1", "src", "include"),
+    GeneratedFiles = dia_generated_files("dia", "src", "include"),
     ok = rebar_file_utils:delete_each(GeneratedFiles),
     ok.
 
--spec compile_asn1(file:filename(), file:filename(),
+-spec compile_dia(file:filename(), file:filename(),
                    rebar_config:config()) -> ok.
-compile_asn1(Source, Target, Config) ->
+compile_dia(Source, Target, Config) ->
     ok = filelib:ensure_dir(Target),
     ok = filelib:ensure_dir(filename:join("include", "dummy.hrl")),
-    Opts = [{outdir, "src"}, noobj] ++ rebar_config:get(Config, asn1_opts, []),
-    case asn1ct:compile(Source, Opts) of
-        ok ->
-            Asn1 = filename:basename(Source, ".asn1"),
-            HrlFile = filename:join("src", Asn1 ++ ".hrl"),
+    Opts = [{outdir, "src"}] ++ rebar_config:get(Config, dia_opts, []),
+    case diameter_dict_util:parse({path, Source}, []) of
+        {ok, Spec} ->
+            FileName = dia_filename(Source, Spec),
+            diameter_codegen:from_dict(FileName, Spec, Opts, erl),
+            diameter_codegen:from_dict(FileName, Spec, Opts, hrl),
+            HrlFile = filename:join("src", FileName ++ ".hrl"),
             case filelib:is_regular(HrlFile) of
                 true ->
                     ok = rebar_file_utils:mv(HrlFile, "include");
                 false ->
                     ok
             end;
-        {error, _Reason} ->
-            ?FAIL
+        {error, Reason} ->
+            ?ERROR("~s~n", [diameter_dict_util:format_error(Reason)])
     end.
 
-asn_generated_files(AsnDir, SrcDir, IncDir) ->
-    lists:foldl(
-      fun(AsnFile, Acc) ->
-              Base = filename:rootname(filename:basename(AsnFile)),
-              [filename:join([IncDir, Base ++ ".hrl"])|
-               filelib:wildcard(filename:join([SrcDir, Base ++ ".*"]))] ++ Acc
-      end,
-      [],
-      filelib:wildcard(filename:join([AsnDir, "*.asn1"]))
-     ).
+dia_generated_files(DiaDir, SrcDir, IncDir) ->
+    F = fun(File, Acc) ->
+            {ok, Spec} = diameter_dict_util:parse({path, File}, []),
+            FileName = dia_filename(File, Spec),
+            [filename:join([IncDir, FileName ++ ".hrl"]) |
+             filelib:wildcard(filename:join([SrcDir, FileName ++ ".*"]))] ++ Acc
+    end,
+    lists:foldl(F, [], filelib:wildcard(filename:join([DiaDir, "*.dia"]))).
+
+dia_filename(File, Spec) ->
+    case proplists:get_value(name, Spec) of
+        undefined ->
+            filename:rootname(filename:basename(File));
+        Name ->
+            Name
+    end.
